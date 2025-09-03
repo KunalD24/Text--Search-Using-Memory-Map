@@ -12,79 +12,73 @@
 #include <unistd.h>
 
 typedef struct {
-    size_t os_page_size;
+    size_t page_size;
     size_t file_size;
-} MmapConfig;
+} Config;
 
-static void fatal(const char *msg)
+static void die(const char *msg)
 {
     perror(msg);
     exit(EXIT_FAILURE);
 }
 
-static size_t get_os_page_size(void)
+static size_t get_page_size(void)
 {
-    long page_size = sysconf(_SC_PAGE_SIZE);
-    if (page_size < 0)
-    {
-        return 4096;
-    }
-    return (size_t)page_size;
+    long p = sysconf(_SC_PAGE_SIZE);
+    if (p < 0) return 4096;
+    return (size_t)p;
 }
 
-static const void *find_bytes(const void *haystack, size_t hlen, const void *needle, size_t nlen)
+static const void *find_buf(const void *buf, size_t blen, const void *pat, size_t plen)
 {
-    if (nlen == 0) return haystack;
-    if (hlen < nlen) return NULL;
+    if (plen == 0) return buf;
+    if (blen < plen) return NULL;
 
-    const unsigned char *h = haystack;
-    const unsigned char *n = needle;
-    size_t last = hlen - nlen;
+    const unsigned char *b = buf;
+    const unsigned char *p = pat;
+    size_t last = blen - plen;
 
-    for (size_t i = 0; i <= last; ++i)
+    for (size_t i = 0; i <= last; i++)
     {
-        if (h[i] == n[0] && memcmp(h + i, n, nlen) == 0)
-            return h + i;
+        if (b[i] == p[0] && memcmp(b + i, p, plen) == 0)
+            return b + i;
     }
     return NULL;
 }
 
-static uint8_t *map_file(int fd, size_t length)
+static uint8_t *map_fd(int fd, size_t len)
 {
-    void *address = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (address == MAP_FAILED)
-    {
-        fatal("mmap");
-    }
-    return (uint8_t *)address;
+    void *addr = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (addr == MAP_FAILED) die("mmap");
+    return (uint8_t *)addr;
 }
 
 int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        fprintf(stderr, "Usage: %s <file> <keyword>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <file> <pattern>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
-    const char *path = argv[1];
-    const char *keyword = argv[2];
-    size_t keyword_len = strlen(keyword);
+    const char *file = argv[1];
+    const char *pat = argv[2];
+    size_t plen = strlen(pat);
 
-    if (keyword_len == 0)
+    if (plen == 0)
     {
-        fprintf(stderr, "Empty keyword not allowed\n");
+        fprintf(stderr, "Empty pattern not allowed\n");
         return EXIT_FAILURE;
     }
 
-    MmapConfig cfg = {0};
-    cfg.os_page_size = get_os_page_size();
+    Config cfg = {0};
+    cfg.page_size = get_page_size();
 
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) fatal("open");
+    int fd = open(file, O_RDONLY);
+    if (fd < 0) die("open");
 
     struct stat st;
-    if (fstat(fd, &st) != 0) fatal("fstat");
+    if (fstat(fd, &st) != 0) die("fstat");
     cfg.file_size = st.st_size;
 
     if (cfg.file_size == 0)
@@ -94,34 +88,31 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    uint8_t *base = map_file(fd, cfg.file_size);
+    uint8_t *data = map_fd(fd, cfg.file_size);
 
-    printf("Searching \"%s\" in file: %s\n", keyword, path);
+    printf("Searching \"%s\" in file: %s\n", pat, file);
 
-    const uint8_t *cursor = base;
-    size_t remaining = cfg.file_size;
-    size_t matches = 0;
+    const uint8_t *cur = data;
+    size_t remain = cfg.file_size;
+    size_t count = 0;
 
-    while (true)
+    while (1)
     {
-        const void *found = find_bytes(cursor, remaining, keyword, keyword_len);
-        if (!found) break;
+        const void *pos = find_buf(cur, remain, pat, plen);
+        if (!pos) break;
 
-        off_t pos = (const uint8_t *)found - base;
-        printf("Match at byte offset: %" PRIu64 "\n", (uint64_t)pos);
+        off_t off = (const uint8_t *)pos - data;
+        printf("Match at byte offset: %" PRIu64 "\n", (uint64_t)off);
 
-        cursor = (const uint8_t *)found + keyword_len;
-        remaining = cfg.file_size - (cursor - base);
-        matches++;
+        cur = (const uint8_t *)pos + plen;
+        remain = cfg.file_size - (cur - data);
+        count++;
     }
 
-    if (matches == 0)
-    {
-        printf("No matches found.\n");
-    }
+    if (count == 0) printf("No matches found.\n");
 
-    if (munmap(base, cfg.file_size) != 0) fatal("munmap");
-    if (close(fd) != 0) fatal("close");
+    if (munmap(data, cfg.file_size) != 0) die("munmap");
+    if (close(fd) != 0) die("close");
 
     return 0;
 }
